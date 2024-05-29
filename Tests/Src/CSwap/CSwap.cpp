@@ -1332,7 +1332,10 @@ void WinCSEventThreadFunc1(WinCSSwapchain* swapchain)
 		{
 			UINT64 value = buffer.PresentFence->GetCompletedValue();
 			if (value != buffer.PresentFenceValue)
+			{
+				swapchain->Mtx.Unlock();
 				continue; // Skip old present
+			}
 
 			buffer.State = c_WinCSBufferPresentable; // Transition to Presentable state
 		}
@@ -1402,6 +1405,25 @@ void WinCSEventThreadFunc2(WinCSSwapchain* swapchain)
 		surface->Surface->SetAlphaMode(swapchain->AlphaMode);
 		surface->Surface->SetColorSpace(swapchain->ColorSpace);
 		surface->Surface->SetBuffer(buffer.PresentationBuffer);
+
+		/*POINT pos {};
+		GetCursorPos(&pos);
+		SetWindowPos(surface->HWnd, nullptr, pos.x + 5, pos.y + 5, 0, 0, SWP_NOSIZE | SWP_NOREDRAW | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER | SWP_NOSENDCHANGING);*/
+
+		/*RECT rect2 {};
+		GetWindowRect(surface->HWnd, &rect2);
+
+		PresentationTransform transform {
+			.M11 = 1.0f,
+			.M12 = 0.0f,
+			.M21 = 0.0f,
+			.M22 = 1.0f,
+			.M31 = 500.0f - rect2.left,
+			.M32 = 500.0f - rect2.top
+		};
+		surface->Surface->SetTransform(&transform);*/
+		// surface->Surface->SetLetterboxingMargins(100.0f, 50.0f, 75.0f, 100.0f);
+
 		SystemInterruptTime time { 0 };
 		surface->Manager->SetTargetTime(time);
 		UINT64 id = surface->Manager->GetNextPresentId();

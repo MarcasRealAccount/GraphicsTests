@@ -172,7 +172,7 @@ int CSwapVK(size_t argc, const std::string_view* argv)
 		.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 		.loadOp             = VK_ATTACHMENT_LOAD_OP_CLEAR,
 		.storeOp            = VK_ATTACHMENT_STORE_OP_STORE,
-		.clearValue         = { .color = { .float32 = { 0.05f, 0.1f, 0.05f, 0.95f } } }
+		.clearValue         = { .color = { .float32 = { 0.95f, 0.1f, 0.05f, 0.95f } } }
 	};
 	VkRenderingInfo renderingInfo {
 		.sType                = VK_STRUCTURE_TYPE_RENDERING_INFO,
@@ -303,14 +303,14 @@ int CSwapVK(size_t argc, const std::string_view* argv)
 			depInfo.pImageMemoryBarriers = &preImageBarrier;
 			vkCmdPipelineBarrier2(frame.CmdBuf, &depInfo);
 
-			colAttach.clearValue.color.float32[0]  = 0.5f + 0.5f * sinf(0.17f + std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - startTime).count() * 3.1415f);
+			/*colAttach.clearValue.color.float32[0]  = 0.5f + 0.5f * sinf(0.17f + std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - startTime).count() * 3.1415f);
 			colAttach.clearValue.color.float32[1]  = 0.5f + 0.5f * sinf(std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - startTime).count() * 3.10f);
 			colAttach.clearValue.color.float32[2]  = 0.5f + 0.5f * sinf(0.65f + std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - startTime).count() * 3.2f);
 			colAttach.clearValue.color.float32[3]  = 0.5f + 0.5f * sinf(0.3f + std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - startTime).count() * 0.5f);
 			colAttach.clearValue.color.float32[0] *= colAttach.clearValue.color.float32[3];
 			colAttach.clearValue.color.float32[1] *= colAttach.clearValue.color.float32[3];
-			colAttach.clearValue.color.float32[2] *= colAttach.clearValue.color.float32[3];
-			renderingInfo.renderArea.extent        = swapchain.Extents;
+			colAttach.clearValue.color.float32[2] *= colAttach.clearValue.color.float32[3];*/
+			renderingInfo.renderArea.extent = swapchain.Extents;
 			vkCmdBeginRendering(frame.CmdBuf, &renderingInfo);
 			vkCmdEndRendering(frame.CmdBuf);
 
@@ -404,7 +404,7 @@ bool InitSwapchainState(SwapchainState* swapchain, Wnd::Handle* window, bool wit
 			.pNext                 = &queueInfo,
 			.flags                 = 0,
 			.surface               = swapchain->Surface,
-			.minImageCount         = std::min<uint32_t>(caps.minImageCount + 1, caps.maxImageCount),
+			.minImageCount         = std::min<uint32_t>(caps.minImageCount + 2, caps.maxImageCount),
 			.imageFormat           = VK_FORMAT_B8G8R8A8_UNORM,
 			.imageColorSpace       = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 			.imageExtent           = swapchain->Extents,
