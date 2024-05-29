@@ -162,60 +162,6 @@ namespace Vk
 namespace DX
 {
 	struct Context;
-
-	struct CSurface
-	{
-		Wnd::Handle*          Window              = nullptr;
-		IDCompositionTarget*  DCompTarget         = nullptr;
-		IDCompositionVisual3* DCompVisual         = nullptr;
-		IPresentationManager* PresentationManager = nullptr;
-		IPresentationSurface* Surface             = nullptr;
-		IUnknown*             DCompSurface        = nullptr;
-		HANDLE                SurfaceHandle       = nullptr;
-	};
-
-	struct CSwapchain
-	{
-		// States for Mailbox Present mode
-		static constexpr uint8_t BufferStateRenderable      = 0; // Can be rendered to immediately, Transition to Rendering
-		static constexpr uint8_t BufferStateRendering       = 1; // Is currently being rendered to, Transition to Waiting
-		static constexpr uint8_t BufferStateDoubleRendering = 2; // Is currently being rendered to for the second time, Transition to DoubleWaiting
-		static constexpr uint8_t BufferStateWaiting         = 3; // Has been rendered to and is waiting for render to finish, can be pre-acquired and rendered to when previous render finishes, Transition to DoubleRendering, if waiting and render finished transition to Presentable
-		static constexpr uint8_t BufferStateDoubleWaiting   = 4; // Has been rendered to twice and is waiting for both to finish, can't be acquired, Transition to Presentable
-		static constexpr uint8_t BufferStatePresentable     = 5; // Is ready to be presented, can be acquired, Transition to Rendering, if acquired by presentation engine transition to Presenting
-		static constexpr uint8_t BufferStatePresenting      = 6; // Is currently being presented, can't be acquired, if retired transition to Renderable
-
-		struct Buffer
-		{
-			IPresentationBuffer* PresentationBuffer = nullptr;
-			ID3D11Texture2D*     Texture            = nullptr;
-			HANDLE*              TextureHandle      = nullptr;
-			ID3D11Fence*         Fence              = nullptr;
-			HANDLE*              FenceHandle        = nullptr;
-			std::atomic_uint8_t  State              = 0;
-			uint32_t             Version            = 0;
-		};
-
-		std::atomic_uint32_t UsableBufferCount = 0;
-		std::atomic_uint32_t MostRecentBuffer  = ~0U;
-		uint32_t             BufferCount       = 0;
-		uint32_t             BufferIndex       = 0;
-		uint32_t             Version           = 0;
-		Buffer               Buffers[8];
-		HANDLE               Events[11]; // [0]: PresentationLost, [1]: TerminateEvent, [2]: RetireEvent, [3,4,5,6,7,8,9,10]: PresentReadyEvents
-		ID3D11Fence*         RetireFence = nullptr;
-
-		CSurface Surface;
-
-		UINT                  Width      = 0;
-		UINT                  Height     = 0;
-		DXGI_FORMAT           Format     = DXGI_FORMAT_UNKNOWN;
-		DXGI_COLOR_SPACE_TYPE ColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
-		DXGI_ALPHA_MODE       AlphaMode  = DXGI_ALPHA_MODE_UNSPECIFIED;
-
-		Concurrency::Mutex Mtx;
-		std::thread        Thread;
-	};
 } // namespace DX
 
 namespace Wnd
@@ -318,13 +264,6 @@ namespace Vk
 	uint32_t FindDeviceMemoryIndex(uint32_t typeBits, VkMemoryPropertyFlags flags);
 
 	VkResult createSurface(Wnd::Handle* window, VkSurfaceKHR* surface);
-
-	VkResult cvkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, VkSurfaceCapabilitiesKHR* pSurfaceCapabilities);
-	VkResult cvkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, uint32_t* pSurfaceFormatCount, VkSurfaceFormatKHR* pSurfaceFormats);
-	VkResult cvkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface, uint32_t* pPresentModeCount, VkPresentModeKHR* pPresentModes);
-	VkResult cvkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex, VkSurfaceKHR surface, VkBool32* pSupported);
-
-	VkResult cvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSwapchainKHR* pSwapchain);
 } // namespace Vk
 
 namespace DX
@@ -338,10 +277,6 @@ namespace DX
 		IDCompositionDevice*  DCompDevice         = nullptr;
 		IDCompositionDevice4* DCompDevice2        = nullptr;
 		IPresentationFactory* PresentationFactory = nullptr;
-
-		std::thread              PresentThread;
-		std::vector<CSwapchain*> Swapchains;
-		Concurrency::Mutex       SwapchainMtx;
 	};
 
 	extern Context* g_Context;
@@ -351,7 +286,6 @@ namespace DX
 		bool WithComposition  = false;
 		bool WithPresentation = false;
 	};
-
 
 	struct CSwapchainSpec
 	{
@@ -366,9 +300,6 @@ namespace DX
 
 	bool Init(const ContextSpec* spec = nullptr);
 	void DeInit();
-
-	bool InitCSwapchain(CSwapchain* swapchain, const CSwapchainSpec* spec);
-	void DeInitCSwapchain(CSwapchain* swapchain);
 } // namespace DX
 
 namespace Wnd

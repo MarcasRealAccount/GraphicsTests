@@ -7,10 +7,11 @@
 #define VK_EXT_WINCS_SURFACE_EXTENSION_NAME "VK_EXT_wincs_surface"
 #define VK_EXT_WINCS_SURFACE_SPEC_VERSION   1
 
-#define VK_STRUCTURE_TYPE_WINCS_SURFACE_CREATE_INFO_EXT ((VkStructureType) 1000009001)
+#define VK_STRUCTURE_TYPE_WINCS_SURFACE_CREATE_INFO_EXT  ((VkStructureType) 1000009001)
+#define VK_STRUCTURE_TYPE_WINCS_SWAPCHAIN_QUEUE_INFO_EXT ((VkStructureType) 1000009002)
 
-typedef void* HINSTANCE;
-typedef void* HWND;
+typedef struct HINSTANCE__* HINSTANCE;
+typedef struct HWND__*      HWND;
 
 typedef VkFlags VkWinCSSurfaceCreateFlagsEXT;
 struct VkWinCSSurfaceCreateInfoEXT
@@ -20,6 +21,13 @@ struct VkWinCSSurfaceCreateInfoEXT
 	VkWinCSSurfaceCreateFlagsEXT flags;
 	HINSTANCE                    hinstance;
 	HWND                         hwnd;
+};
+
+struct VkWinCSSwapchainQueueInfoEXT
+{
+	VkStructureType sType;
+	const void*     pNext;
+	VkQueue         queue;
 };
 
 VkResult vkCreateWinCSSurfaceEXT(

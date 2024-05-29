@@ -19,6 +19,8 @@
 
 #include <Concurrency/Mutex.h> // Faster mutexes
 
+#pragma comment(lib, "Synchronization.lib")
+
 // Provided by VK_KHR_external_memory_win32
 typedef struct VkMemoryWin32HandlePropertiesKHR
 {
@@ -174,7 +176,7 @@ static constexpr uint8_t c_WinCSBufferPresenting      = 6;
 //		DoubleRendering: Not acquired
 //		Waiting:         Transition to DoubleRendering, Signal semaphore and fence on bufferRendered
 //		DoubleWaiting:   Not acquired
-//		Presentable:     Not acquired
+//		Presentable:     Transition to Rendering, Signal semaphore and fence immediately
 //		Presenting:      Not acquired
 //	vkQueuePresentKHR:
 //		Renderable:      Not presentable
@@ -185,7 +187,7 @@ static constexpr uint8_t c_WinCSBufferPresenting      = 6;
 //		Presentable:     Not presentable
 //		Presenting:      Not presentable
 //	EventThread1:
-//		OnBufferRetire:   Transition to Renderable
+//		OnBufferRetire:   Transition to Renderable if buffer is Presenting
 //		OnBufferRendered: Transition to Presentable if buffer is Waiting, if buffer is DoubleWaiting, skip transition unless fence value is the current expected fence value
 //	EventThread2: Transition newest Presentable to Presenting
 //
@@ -240,6 +242,8 @@ struct WinCSSwapchain
 	DXGI_ALPHA_MODE               AlphaMode;
 	VkPresentModeKHR              PresentMode;
 	VkSurfaceTransformFlagBitsKHR Transform;
+
+	VkQueue Queue;
 
 	Concurrency::Mutex Mtx;
 	std::atomic_bool   EventThreadsRunning;
@@ -372,7 +376,7 @@ VkResult vkCreateWinCSSurfaceEXT(
 		if (pAllocator)
 			allocedSurface = (WinCSSurface*) pAllocator->pfnAllocation(pAllocator->pUserData, sizeof(WinCSSurface), alignof(WinCSSurface), VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
 		else
-			allocedSurface = (WinCSSurface*) malloc(sizeof(WinCSSurface));
+			allocedSurface = new WinCSSurface();
 		if (!allocedSurface)
 		{
 			result = VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -428,7 +432,7 @@ void wincs_surface_vkDestroySurfaceKHR(
 	if (pAllocator)
 		pAllocator->pfnFree(pAllocator->pUserData, pSurface);
 	else
-		free(pSurface);
+		delete pSurface;
 }
 
 VkResult wincs_surface_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -449,9 +453,9 @@ VkResult wincs_surface_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
 	uint32_t width  = (uint32_t) (clientRect.right - clientRect.left);
 	uint32_t height = (uint32_t) (clientRect.bottom - clientRect.top);
 
-	VkSurfaceTransformFlagsKHR supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR;
+	/*VkSurfaceTransformFlagsKHR supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR;
 	if (width == height)
-		supportedTransforms |= VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR;
+		supportedTransforms |= VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR;*/
 
 	pSurfaceCapabilities->minImageCount           = 2;
 	pSurfaceCapabilities->maxImageCount           = c_WinCSMaxBufferCount;
@@ -459,7 +463,7 @@ VkResult wincs_surface_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
 	pSurfaceCapabilities->minImageExtent          = { 1, 1 };
 	pSurfaceCapabilities->maxImageExtent          = { 0xFFFF, 0xFFFF };
 	pSurfaceCapabilities->maxImageArrayLayers     = 1;
-	pSurfaceCapabilities->supportedTransforms     = supportedTransforms;
+	pSurfaceCapabilities->supportedTransforms     = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	pSurfaceCapabilities->currentTransform        = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	pSurfaceCapabilities->supportedCompositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR | VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR | VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR;
 	pSurfaceCapabilities->supportedUsageFlags     = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
@@ -671,10 +675,20 @@ VkResult wincs_surface_vkCreateSwapchainKHR(
 				break;
 			}
 
+			const VkWinCSSwapchainQueueInfoEXT* pQueueInfo = nullptr;
+			for (const void* pNext = pCreateInfo->pNext; pNext;)
+			{
+				if (((VkBaseInStructure*) pNext)->sType == VK_STRUCTURE_TYPE_WINCS_SWAPCHAIN_QUEUE_INFO_EXT)
+					pQueueInfo = (const VkWinCSSwapchainQueueInfoEXT*) pNext;
+				pNext = ((VkBaseInStructure*) pNext)->pNext;
+			}
+			if (!pQueueInfo)
+				break;
+
 			if (pAllocator)
 				swapchain = (WinCSSwapchain*) pAllocator->pfnAllocation(pAllocator->pUserData, sizeof(WinCSSwapchain), alignof(WinCSSwapchain), VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
 			else
-				swapchain = (WinCSSwapchain*) malloc(sizeof(WinCSSwapchain));
+				swapchain = new WinCSSwapchain();
 			if (!swapchain)
 			{
 				result = VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -683,6 +697,8 @@ VkResult wincs_surface_vkCreateSwapchainKHR(
 
 			surface->Swapchain = swapchain;
 			swapchain->Surface = surface;
+
+			swapchain->Queue = pQueueInfo->queue;
 
 			swapchain->Width       = pCreateInfo->imageExtent.width;
 			swapchain->Height      = pCreateInfo->imageExtent.height;
@@ -819,14 +835,17 @@ VkResult wincs_surface_vkCreateSwapchainKHR(
 					.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 					.pNext           = &imHandleInfo,
 					.allocationSize  = mReq.size,
-					.memoryTypeIndex = std::countr_zero(handleProps.memoryTypeBits)
+					.memoryTypeIndex = (uint32_t) std::countr_zero(handleProps.memoryTypeBits)
 				};
 				result = vkAllocateMemory(device, &mAllocInfo, pAllocator, &buffer.vkImageMemory);
 				if (result < VK_SUCCESS)
 					break;
+				result = vkBindImageMemory(device, buffer.vkImage, buffer.vkImageMemory, 0);
+				if (result < VK_SUCCESS)
+					break;
 
 				VkSemaphoreTypeCreateInfo stCreateInfo {
-					.sType         = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+					.sType         = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
 					.pNext         = nullptr,
 					.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
 					.initialValue  = 0
@@ -859,6 +878,8 @@ VkResult wincs_surface_vkCreateSwapchainKHR(
 			swapchain->EventThreadsRunning = true;
 			swapchain->EventThread1        = std::thread(&WinCSEventThreadFunc1, swapchain);
 			swapchain->EventThread2        = std::thread(&WinCSEventThreadFunc2, swapchain);
+
+			*pSwapchain = (VkSwapchainKHR) swapchain;
 			return VK_SUCCESS;
 		}
 		while (false);
@@ -942,7 +963,7 @@ void wincs_surface_vkDestroySwapchainKHR(
 	if (pAllocator)
 		pAllocator->pfnFree(pAllocator->pUserData, swapchain);
 	else
-		free(swapchain);
+		delete pSwapchain;
 }
 
 VkResult wincs_surface_vkGetSwapchainImagesKHR(
@@ -998,9 +1019,14 @@ VkResult wincs_surface_vkAcquireNextImageKHR(
 		QueryPerformanceCounter((LARGE_INTEGER*) &now);
 		uint64_t end = now + (timeout + 99) / 100;
 
+		uint32_t compareValue = 0;
 		while (end > now)
 		{
-			WaitOnAddress((uint32_t))
+			DWORD timeLeft = (DWORD) std::min<size_t>(end - now, INFINITE - 1);
+			WaitOnAddress(&pSwapchain->UsableBufferCount, &compareValue, 4, timeLeft);
+			if (pSwapchain->UsableBufferCount)
+				break;
+			QueryPerformanceCounter((LARGE_INTEGER*) &now);
 		}
 		if (!pSwapchain->UsableBufferCount)
 			return VK_TIMEOUT;
@@ -1010,18 +1036,376 @@ VkResult wincs_surface_vkAcquireNextImageKHR(
 		uint32_t compareValue = 0;
 		WaitOnAddress(&pSwapchain->UsableBufferCount, &compareValue, 4, INFINITE);
 	}
+
+	VkSemaphoreSubmitInfo wait {
+		.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.pNext       = nullptr,
+		.semaphore   = nullptr,
+		.value       = 0,
+		.stageMask   = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+		.deviceIndex = 0
+	};
+	VkSemaphoreSubmitInfo signal {
+		.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+		.pNext       = nullptr,
+		.semaphore   = semaphore,
+		.value       = 0,
+		.stageMask   = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+		.deviceIndex = 0
+	};
+	VkSubmitInfo2 submit {
+		.sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+		.pNext                    = nullptr,
+		.flags                    = 0,
+		.waitSemaphoreInfoCount   = 0,
+		.commandBufferInfoCount   = 0,
+		.signalSemaphoreInfoCount = 1,
+		.pSignalSemaphoreInfos    = &signal
+	};
+	switch (pSwapchain->PresentMode)
+	{
+	case VK_PRESENT_MODE_FIFO_KHR:
+	{
+		pSwapchain->Mtx.Lock();
+		uint32_t startIndex = pSwapchain->BufferIndex;
+		do
+		{
+			uint32_t currentIndex   = pSwapchain->BufferIndex;
+			auto&    buffer         = pSwapchain->Buffers[currentIndex];
+			pSwapchain->BufferIndex = (currentIndex + 1) % pSwapchain->BufferCount;
+			uint8_t state           = buffer.State.load();
+			if (state != c_WinCSBufferRenderable)
+				continue;
+			buffer.State = c_WinCSBufferDoubleRendering; // Transition to Rendering
+			--pSwapchain->UsableBufferCount;             // And decrement usable buffer count
+			pSwapchain->Mtx.Unlock();
+			*pImageIndex = currentIndex;
+			if (semaphore)
+				return vkQueueSubmit2(pSwapchain->Queue, 1, &submit, fence);
+			else if (fence)
+				return vkQueueSubmit2(pSwapchain->Queue, 0, nullptr, fence);
+		}
+		while (pSwapchain->BufferIndex != startIndex);
+		pSwapchain->Mtx.Unlock();
+		break;
+	}
+	case VK_PRESENT_MODE_MAILBOX_KHR:
+	{
+		pSwapchain->Mtx.Lock();
+		uint32_t startIndex = pSwapchain->BufferIndex;
+		do
+		{
+			uint32_t currentIndex   = pSwapchain->BufferIndex;
+			pSwapchain->BufferIndex = (currentIndex + 1) % pSwapchain->BufferCount;
+			if (pSwapchain->PresentQueue[0] == currentIndex)
+				continue;
+			auto&   buffer = pSwapchain->Buffers[currentIndex];
+			uint8_t state  = buffer.State.load();
+			switch (state)
+			{
+			case c_WinCSBufferRenderable:
+			case c_WinCSBufferPresentable:
+				buffer.State = c_WinCSBufferRendering; // Transition to Rendering
+				--pSwapchain->UsableBufferCount;       // And decrement usable buffer count
+				pSwapchain->Mtx.Unlock();
+				*pImageIndex = currentIndex;
+				if (semaphore)
+					return vkQueueSubmit2(pSwapchain->Queue, 1, &submit, fence);
+				else
+					return vkQueueSubmit2(pSwapchain->Queue, 0, nullptr, fence);
+			case c_WinCSBufferWaiting:
+				buffer.State = c_WinCSBufferDoubleRendering; // Transition to DoubleRendering
+				--pSwapchain->UsableBufferCount;             // And decrement usable buffer count
+				pSwapchain->Mtx.Unlock();
+				if (!semaphore)
+					submit.signalSemaphoreInfoCount = 0;
+				submit.waitSemaphoreInfoCount = 1;
+				submit.pWaitSemaphoreInfos    = &wait;
+				wait.semaphore                = buffer.vkTimeline;
+				wait.value                    = buffer.PresentFenceValue;
+				*pImageIndex                  = currentIndex;
+				return vkQueueSubmit2(pSwapchain->Queue, 1, &submit, fence);
+			}
+		}
+		while (pSwapchain->BufferIndex != startIndex);
+		pSwapchain->Mtx.Unlock();
+		break;
+	}
+	}
+	return VK_NOT_READY;
 }
 
 VkResult wincs_surface_vkQueuePresentKHR(
 	VkQueue                 queue,
 	const VkPresentInfoKHR* pPresentInfo)
 {
+#if BUILD_IS_CONFIG_DEBUG
+	if (!queue || !pPresentInfo || (pPresentInfo->swapchainCount && (!pPresentInfo->pSwapchains || !pPresentInfo->pImageIndices)) || (pPresentInfo->waitSemaphoreCount && !pPresentInfo->pWaitSemaphores))
+		throw std::runtime_error("Nullptrs passed to wincs_surface_vkQueuePresentKHR");
+#endif
+
+	VkResult result = VK_SUCCESS;
+	for (uint32_t i = 0; i < pPresentInfo->swapchainCount; ++i)
+	{
+		WinCSSwapchain* swapchain  = (WinCSSwapchain*) pPresentInfo->pSwapchains[i];
+		uint32_t        imageIndex = pPresentInfo->pImageIndices[i];
+
+		VkResult subResult = VK_SUCCESS;
+		do
+		{
+			if (imageIndex >= swapchain->BufferCount)
+			{
+				subResult = VK_SUBOPTIMAL_KHR;
+				break;
+			}
+
+			auto&   buffer = swapchain->Buffers[imageIndex];
+			uint8_t state  = buffer.State;
+			if (state != c_WinCSBufferRendering &&
+				state != c_WinCSBufferDoubleRendering)
+			{
+				subResult = VK_SUBOPTIMAL_KHR;
+				break;
+			}
+
+			if (!pPresentInfo->waitSemaphoreCount)
+			{
+				buffer.State = c_WinCSBufferPresentable; // Transition to Presentable
+				switch (swapchain->PresentMode)
+				{
+				case VK_PRESENT_MODE_FIFO_KHR:
+					swapchain->Mtx.Lock();
+					for (uint32_t j = 0; j < swapchain->BufferCount; ++j)
+					{
+						if (swapchain->PresentQueue[j] == ~0U)
+						{
+							swapchain->PresentQueue[j] = imageIndex;
+							break;
+						}
+					}
+					swapchain->Mtx.Unlock();
+					break;
+				case VK_PRESENT_MODE_MAILBOX_KHR:
+					swapchain->Mtx.Lock();
+					if (swapchain->PresentQueue[0] != ~0U)
+					{
+						++swapchain->UsableBufferCount; // Increment usable buffer count
+						swapchain->UsableBufferCount.notify_one();
+					}
+					swapchain->PresentQueue[0] = imageIndex;
+					swapchain->Mtx.Unlock();
+					break;
+				}
+			}
+			else
+			{
+				VkSemaphoreSubmitInfo* waits = new VkSemaphoreSubmitInfo[pPresentInfo->waitSemaphoreCount];
+				for (uint32_t j = 0; j < pPresentInfo->waitSemaphoreCount; ++j)
+				{
+					waits[j] = {
+						.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+						.pNext       = nullptr,
+						.semaphore   = pPresentInfo->pWaitSemaphores[i],
+						.value       = 0,
+						.stageMask   = VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT,
+						.deviceIndex = 0
+					};
+				}
+				VkSemaphoreSubmitInfo signal {
+					.sType       = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+					.pNext       = nullptr,
+					.semaphore   = buffer.vkTimeline,
+					.value       = ++buffer.PresentFenceValue,
+					.stageMask   = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+					.deviceIndex = 0
+				};
+				VkSubmitInfo2 submit {
+					.sType                    = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+					.pNext                    = nullptr,
+					.flags                    = 0,
+					.waitSemaphoreInfoCount   = pPresentInfo->waitSemaphoreCount,
+					.pWaitSemaphoreInfos      = waits,
+					.commandBufferInfoCount   = 0,
+					.signalSemaphoreInfoCount = 1,
+					.pSignalSemaphoreInfos    = &signal
+				};
+				if (state == c_WinCSBufferDoubleRendering)
+				{
+					buffer.State = c_WinCSBufferDoubleWaiting; // Transition to DoubleWaiting
+				}
+				else
+				{
+					buffer.State = c_WinCSBufferWaiting; // Transition to Waiting
+					if (swapchain->PresentMode == VK_PRESENT_MODE_MAILBOX_KHR)
+					{
+						++swapchain->UsableBufferCount; // And increment usable buffer count
+						swapchain->UsableBufferCount.notify_one();
+					}
+				}
+				subResult = vkQueueSubmit2(queue, 1, &submit, nullptr);
+				delete[] waits;
+				HRESULT hr = buffer.PresentFence->SetEventOnCompletion(buffer.PresentFenceValue, swapchain->Events[3 + imageIndex]);
+				if (hr < S_OK)
+				{
+					subResult = VK_SUBOPTIMAL_KHR;
+					break;
+				}
+			}
+		}
+		while (false);
+
+		if (pPresentInfo->pResults)
+			pPresentInfo->pResults[i] = subResult;
+
+		do
+		{
+			if (subResult == VK_ERROR_DEVICE_LOST)
+				result = subResult;
+			if (result == VK_ERROR_DEVICE_LOST)
+				break;
+			if (subResult == VK_ERROR_SURFACE_LOST_KHR)
+				result = subResult;
+			if (result == VK_ERROR_SURFACE_LOST_KHR)
+				break;
+			if (subResult == VK_ERROR_OUT_OF_DATE_KHR)
+				result = subResult;
+			if (result == VK_ERROR_OUT_OF_DATE_KHR)
+				break;
+			if (subResult == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
+				result = subResult;
+			if (result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT)
+				break;
+			if (subResult == VK_SUBOPTIMAL_KHR)
+				result = subResult;
+		}
+		while (false);
+	}
+	return result;
 }
 
 void WinCSEventThreadFunc1(WinCSSwapchain* swapchain)
 {
+	while (swapchain->EventThreadsRunning)
+	{
+		DWORD eventIndex = WaitForMultipleObjects(3 + swapchain->BufferCount, swapchain->Events, FALSE, INFINITE);
+		if (eventIndex < WAIT_OBJECT_0 || eventIndex >= WAIT_OBJECT_0 + 3 + swapchain->BufferCount)
+		{
+			// TODO: Problems happened, let's assume it didn't happen for the time being
+			continue;
+		}
+		if (eventIndex == WAIT_OBJECT_0) // Lost event
+		{
+			// TODO: Presentation Manager was lost, but for the moment let's assume it didn't happen
+			continue;
+		}
+		if (eventIndex == WAIT_OBJECT_0 + 1) // Terminate event
+			break;
+		ResetEvent(swapchain->Events[eventIndex]);
+		if (eventIndex == WAIT_OBJECT_0 + 2) // OnBufferRetire
+		{
+			for (uint32_t i = 0; i < swapchain->BufferCount; ++i)
+			{
+				auto& buffer = swapchain->Buffers[i];
+				if (buffer.State != c_WinCSBufferPresenting)
+					continue;
+				boolean available = FALSE;
+				buffer.PresentationBuffer->IsAvailable(&available);
+				if (available)
+				{
+					buffer.State = c_WinCSBufferRenderable; // Transition to Renderable state
+					++swapchain->UsableBufferCount;         // And increment usable buffer count
+					swapchain->UsableBufferCount.notify_one();
+				}
+			}
+			continue;
+		}
+
+		// OnBufferRendered
+		uint32_t imageIndex = (uint32_t) (eventIndex - WAIT_OBJECT_0 - 3);
+		swapchain->Mtx.Lock();
+		auto& buffer = swapchain->Buffers[imageIndex];
+		if (buffer.State == c_WinCSBufferWaiting)
+		{
+			buffer.State = c_WinCSBufferPresentable; // Transition to Presentable state
+		}
+		else if (buffer.State == c_WinCSBufferDoubleWaiting)
+		{
+			UINT64 value = buffer.PresentFence->GetCompletedValue();
+			if (value != buffer.PresentFenceValue)
+				continue; // Skip old present
+
+			buffer.State = c_WinCSBufferPresentable; // Transition to Presentable state
+		}
+		switch (swapchain->PresentMode)
+		{
+		case VK_PRESENT_MODE_FIFO_KHR:
+			for (uint32_t i = 0; i < swapchain->BufferCount; ++i)
+			{
+				if (swapchain->PresentQueue[i] == ~0U)
+				{
+					swapchain->PresentQueue[i] = imageIndex;
+					break;
+				}
+			}
+			break;
+		case VK_PRESENT_MODE_MAILBOX_KHR:
+			if (swapchain->PresentQueue[0] != ~0U)
+			{
+				++swapchain->UsableBufferCount; // Increment usable buffer count
+				swapchain->UsableBufferCount.notify_one();
+			}
+			swapchain->PresentQueue[0] = imageIndex;
+			break;
+		}
+		swapchain->Mtx.Unlock();
+	}
 }
 
 void WinCSEventThreadFunc2(WinCSSwapchain* swapchain)
 {
+	while (swapchain->EventThreadsRunning)
+	{
+		DWORD eventIndex = DCompositionWaitForCompositorClock(2, swapchain->Events, INFINITE);
+		if (eventIndex < WAIT_OBJECT_0 || eventIndex >= WAIT_OBJECT_0 + 3 + swapchain->BufferCount)
+		{
+			// TODO: Problems happened, let's assume it didn't happen for the time being
+			continue;
+		}
+		if (eventIndex == WAIT_OBJECT_0) // Lost event
+		{
+			// TODO: Presentation Manager was lost, but for the moment let's assume it didn't happen
+			continue;
+		}
+		if (eventIndex == WAIT_OBJECT_0 + 1) // Terminate event
+			break;
+
+		swapchain->Mtx.Lock();
+		uint32_t imageIndex = swapchain->PresentQueue[0];
+		for (uint32_t i = 1; i < swapchain->BufferCount; ++i)
+			swapchain->PresentQueue[i - 1] = swapchain->PresentQueue[i];
+		swapchain->PresentQueue[swapchain->BufferCount - 1] = ~0U;
+		swapchain->Mtx.Unlock();
+		if (imageIndex == ~0U)
+			continue; // Skip frame as nothing was presented
+
+		WinCSSurface* surface = swapchain->Surface;
+
+		auto& buffer = swapchain->Buffers[imageIndex];
+		buffer.State = c_WinCSBufferPresenting; // Transition to Presenting
+		RECT rect {
+			.left   = 0,
+			.top    = 0,
+			.right  = (LONG) swapchain->Width,
+			.bottom = (LONG) swapchain->Height
+		};
+		surface->Surface->SetSourceRect(&rect);
+		surface->Surface->SetAlphaMode(swapchain->AlphaMode);
+		surface->Surface->SetColorSpace(swapchain->ColorSpace);
+		surface->Surface->SetBuffer(buffer.PresentationBuffer);
+		SystemInterruptTime time { 0 };
+		surface->Manager->SetTargetTime(time);
+		UINT64 id = surface->Manager->GetNextPresentId();
+		surface->Manager->Present();
+		swapchain->RetireFence->SetEventOnCompletion(id, swapchain->Events[2]);
+	}
 }

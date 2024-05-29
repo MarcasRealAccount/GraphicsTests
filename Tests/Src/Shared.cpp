@@ -792,22 +792,6 @@ namespace DX
 		delete g_Context;
 		g_Context = nullptr;
 	}
-
-	bool InitCSwapchain(CSwapchain* swapchain, const CSwapchainSpec* spec)
-	{
-		if (!g_Context || !swapchain || !spec)
-			return false;
-
-		if (spec->MinBufferCount >= 8)
-			return false;
-		
-
-		return true;
-	}
-
-	void DeInitCSwapchain(CSwapchain* swapchain)
-	{
-	}
 } // namespace DX
 
 namespace Wnd

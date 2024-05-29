@@ -3,7 +3,6 @@
 #include <string_view>
 
 int CSwapVK(size_t argc, const std::string_view* argv);
-int CSwapVK2(size_t argc, const std::string_view* argv);
 int DCompVK(size_t argc, const std::string_view* argv);
 int DXGISwapVK(size_t argc, const std::string_view* argv);
 int STMS(size_t argc, const std::string_view* argv);
@@ -20,11 +19,6 @@ static constexpr TestSpec c_Tests[] {
      .Name       = "CSwapVK",
      .Desc       = "Composition Swapchain using Vulkan",
      .Entrypoint = CSwapVK,
-	 },
-	{
-     .Name       = "CSwapVK2",
-     .Desc       = "Composition Swapchain using Vulkan v2",
-     .Entrypoint = CSwapVK2,
 	 },
 	{
      .Name       = "DCompVK",
